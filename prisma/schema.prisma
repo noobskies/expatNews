@@ -14,6 +14,193 @@ datasource db {
     url      = env("DATABASE_URL")
 }
 
+// ExpatNews Core Models
+
+model NewsSource {
+    id               String     @id @default(cuid())
+    name             String // e.g., "新浪新闻", "腾讯新闻"
+    nameEn           String // e.g., "Sina News", "Tencent News"
+    baseUrl          String // e.g., "https://news.sina.com.cn"
+    sourceType       SourceType
+    credibilityScore Int        @default(50) // 0-100 credibility rating
+    isActive         Boolean    @default(true)
+
+    // Scraping configuration
+    scrapingConfig Json? // Store scraping-specific settings
+    lastScrapedAt  DateTime?
+    scrapingErrors Int       @default(0)
+
+    // Metadata
+    description String?
+    language    String  @default("zh-CN")
+    country     String  @default("CN")
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations
+    articles NewsArticle[]
+
+    @@index([sourceType])
+    @@index([isActive])
+    @@index([credibilityScore])
+}
+
+model NewsArticle {
+    id String @id @default(cuid())
+
+    // Content
+    title     String // Original Chinese title
+    titleEn   String? // AI-generated English title
+    content   String // Full article content in Chinese
+    contentEn String? // AI-generated English summary
+    excerpt   String? // Brief excerpt/summary
+
+    // Source information
+    sourceId    String
+    source      NewsSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+    originalUrl String // Original article URL
+    author      String? // Article author if available
+
+    // Timestamps
+    publishedAt DateTime // When article was published by source
+    scrapedAt   DateTime @default(now()) // When we scraped it
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+
+    // Classification
+    category   String? // Source's original category
+    categoryEn String? // Standardized English category
+
+    // Geographic relevance
+    locations ArticleLocation[]
+
+    // AI Analysis
+    relevanceScore Float? // 0-1 AI-calculated expat relevance
+    sentimentScore Float? // -1 to 1 sentiment analysis
+    urgencyLevel   UrgencyLevel @default(MEDIUM)
+
+    // Social engagement (primarily from Tencent)
+    socialMetrics SocialMetrics?
+
+    // Content flags
+    isTranslated Boolean @default(false)
+    isProcessed  Boolean @default(false) // AI processing completed
+    isFeatured   Boolean @default(false)
+    isArchived   Boolean @default(false)
+
+    // Deduplication
+    contentHash String? // Hash for duplicate detection
+
+    @@unique([originalUrl]) // Prevent duplicate URLs
+    @@index([publishedAt])
+    @@index([scrapedAt])
+    @@index([sourceId])
+    @@index([relevanceScore])
+    @@index([urgencyLevel])
+    @@index([isProcessed])
+    @@index([contentHash])
+}
+
+model SocialMetrics {
+    id        String      @id @default(cuid())
+    articleId String      @unique
+    article   NewsArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+    likes    Int @default(0)
+    comments Int @default(0)
+    shares   Int @default(0)
+    views    Int @default(0)
+
+    // Engagement rate calculation
+    engagementRate Float @default(0)
+
+    lastUpdated DateTime @default(now())
+
+    @@index([engagementRate])
+    @@index([lastUpdated])
+}
+
+model Location {
+    id     String       @id @default(cuid())
+    name   String // e.g., "上海", "北京"
+    nameEn String // e.g., "Shanghai", "Beijing"
+    type   LocationType
+
+    // Geographic data
+    latitude  Float?
+    longitude Float?
+
+    // Hierarchy (for districts within cities)
+    parentId String?
+    parent   Location?  @relation("LocationHierarchy", fields: [parentId], references: [id])
+    children Location[] @relation("LocationHierarchy")
+
+    // Metadata
+    isActive Boolean @default(true)
+    priority Int     @default(0) // Higher priority locations get more weight
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    // Relations
+    articleLocations ArticleLocation[]
+
+    @@unique([name, type]) // Prevent duplicate location names per type
+    @@index([type])
+    @@index([isActive])
+    @@index([priority])
+}
+
+model ArticleLocation {
+    id         String @id @default(cuid())
+    articleId  String
+    locationId String
+
+    article  NewsArticle @relation(fields: [articleId], references: [id], onDelete: Cascade)
+    location Location    @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+    // Relevance scoring
+    relevanceScore Float @default(0.5) // How relevant this location is to the article
+
+    // Detection method
+    detectionMethod DetectionMethod // How we identified this location
+    confidence      Float           @default(0.5) // Confidence in the detection
+
+    createdAt DateTime @default(now())
+
+    @@unique([articleId, locationId])
+    @@index([relevanceScore])
+    @@index([detectionMethod])
+}
+
+model Category {
+    id     String @id @default(cuid())
+    name   String // e.g., "Immigration & Visa"
+    nameZh String // e.g., "签证移民"
+    slug   String @unique // e.g., "immigration-visa"
+
+    description String?
+    color       String? // Hex color for UI
+    icon        String? // Icon identifier
+
+    // Priority for expats
+    priority Int     @default(0) // Higher = more important for expats
+    isActive Boolean @default(true)
+
+    // Hierarchy
+    parentId String?
+    parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+    children Category[] @relation("CategoryHierarchy")
+
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    @@index([priority])
+    @@index([isActive])
+}
+
+// Keep original Post model for backward compatibility
 model Post {
     id        Int      @id @default(autoincrement())
     name      String
@@ -24,6 +211,37 @@ model Post {
     createdById String
 
     @@index([name])
+}
+
+// Enums
+enum SourceType {
+    CHINESE_NEWS // 新浪新闻, 腾讯新闻, etc.
+    SOCIAL_MEDIA // 微博, 知乎
+    INTERNATIONAL // Reddit, international news
+    GOVERNMENT // Official government sources
+    BUSINESS // Business-focused sources
+}
+
+enum LocationType {
+    COUNTRY
+    PROVINCE
+    CITY
+    DISTRICT
+    LANDMARK
+}
+
+enum UrgencyLevel {
+    LOW
+    MEDIUM
+    HIGH
+    CRITICAL
+}
+
+enum DetectionMethod {
+    KEYWORD_MATCH // Found via keyword matching
+    NLP_EXTRACTION // AI/NLP identified location
+    MANUAL_TAG // Manually tagged
+    SOURCE_TAG // Source provided geographic tag
 }
 
 // Necessary for Next auth
